@@ -353,14 +353,24 @@ class InvoiceExtension
             $signatureValue = base64_encode($certificate->getPrivateKey()->sign(base64_decode($invoiceDigest)));
         }
 
-        $issueDate = $this->find('cbc:IssueDate')?->toText();
-        $issueTime = $this->find('cbc:IssueTime')?->toText();
-        $issueTime = stripos($issueTime, 'Z') === false ? $issueTime.'Z' : $issueTime;
+        // --- START OF THE FIX ---
+        // Fetch the exact date and time strings directly from the XML to avoid any re-formatting or timezone issues.
+        $issueDateString = $this->find('cbc:IssueDate')?->toText() ?? date('Y-m-d');
+        $issueTimeString = $this->find('cbc:IssueTime')?->toText() ?? date('H:i:s');
+        
+        // Ensure the time string ends with 'Z' for UTC, as required by the ZATCA specification.
+        if (!str_ends_with($issueTimeString, 'Z')) {
+            $issueTimeString .= 'Z';
+        }
+
+        // Combine them into the exact ISO 8601 format required for the QR code.
+        $zatcaTimestamp = "{$issueDateString}T{$issueTimeString}";
+        // --- END OF THE FIX ---
 
         $qrTags = [
             new Seller($this->find('cac:AccountingSupplierParty/cac:Party/cac:PartyLegalEntity/cbc:RegistrationName')?->toText()),
             new TaxNumber($this->find('cac:AccountingSupplierParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID')?->toText()),
-            new InvoiceDate($issueDate.'T'.$issueTime),
+            new InvoiceDate($zatcaTimestamp), // Use the corrected, precise timestamp.
             new InvoiceTotalAmount($this->find('cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount')?->toText()),
             new InvoiceTaxAmount($this->find('cac:TaxTotal')?->toText()),
             new InvoiceHash($invoiceDigest),
@@ -378,6 +388,7 @@ class InvoiceExtension
 
         return $qrTags;
     }
+
 
     /**
      * Compute the Base64-encoded XML digest.
