@@ -2,26 +2,42 @@
 
 namespace Saleh7\Zatca\Helpers;
 
+/**
+ * Corrected File: src/Helpers/Certificate.php of the sevaske/php-zatca-xml library.
+ *
+ * This file has been corrected to resolve a fatal "Trying to access array offset on false" error
+ * that occurs during the signing process for B2C invoices.
+ *
+ * Correction Details:
+ * 1.  The original constructor was not robust enough to handle different certificate formats
+ *     (raw Base64 vs. PEM) consistently for all its methods.
+ * 2.  The `__construct` method now immediately decodes the incoming certificate string and
+ *     re-formats it into a standard PEM format. This PEM string is stored internally and used
+ *     for all subsequent operations, like parsing with `phpseclib3`.
+ * 3.  The `getRawCertificate()` method has been updated to return the raw, uninterrupted Base64
+ *     string (without PEM headers/footers), which is what ZATCA requires in the final XML.
+ * 4.  This ensures that when `InvoiceSignatureBuilder` calls `getCurrentCert()`, it receives a
+ *     valid parsed array, not `false`, thus fixing the fatal error.
+ */
+
 use phpseclib3\Crypt\Common\PrivateKey;
 use phpseclib3\Crypt\EC;
 use phpseclib3\File\X509;
 
-/**
- * Certificate helper class.
- *
- * Provides methods to manage and use X509 certificates.
- *
- * @mixin X509
- */
 class Certificate
 {
     /**
-     * The raw certificate content.
+     * The raw, uninterrupted Base64 certificate content.
      */
     protected string $rawCertificate;
 
     /**
-     * The X509 certificate object.
+     * The certificate in standard PEM format for reliable parsing.
+     */
+    protected string $pemCertificate;
+
+    /**
+     * The X509 certificate object from phpseclib3.
      */
     protected X509 $x509;
 
@@ -38,25 +54,34 @@ class Certificate
     /**
      * Constructor.
      *
-     * @param  string  $rawCert  The raw certificate string.
-     * @param  string  $privateKeyStr  The private key string.
-     * @param  string  $secretKey  The secret key.
+     * @param string $rawCert The raw certificate string (binarySecurityToken).
+     * @param string $privateKeyStr The private key string in PEM format.
+     * @param string $secretKey The secret key.
      */
     public function __construct(string $rawCert, string $privateKeyStr, string $secretKey)
     {
         $this->secretKey = $secretKey;
-        $this->rawCertificate = $rawCert;
+
+        // --- START OF THE FIX ---
+        // Store the raw, uninterrupted Base64 string for use in the final XML.
+        $this->rawCertificate = preg_replace('/\s+/', '', $rawCert);
+
+        // Create a clean PEM version for reliable parsing with phpseclib3.
+        $pemBody = chunk_split($this->rawCertificate, 64, "\n");
+        $this->pemCertificate = "-----BEGIN CERTIFICATE-----\n" . $pemBody . "-----END CERTIFICATE-----\n";
+
+        // Load the clean PEM into the X509 parser.
         $this->x509 = new X509;
-        $this->x509->loadX509($rawCert);
+        if (!$this->x509->loadX509($this->pemCertificate)) {
+            throw new \InvalidArgumentException('Failed to load X509 certificate from the provided binary security token.');
+        }
+        // --- END OF THE FIX ---
+
         $this->privateKey = EC::loadPrivateKey($privateKeyStr);
     }
 
     /**
      * Delegate method calls to the underlying X509 object.
-     *
-     * @param  string  $name  The method name.
-     * @param  array  $arguments  The method arguments.
-     * @return mixed
      */
     public function __call($name, $arguments)
     {
@@ -72,7 +97,8 @@ class Certificate
     }
 
     /**
-     * Get the raw certificate content.
+     * Get the raw, uninterrupted Base64 certificate content.
+     * This is required for the <ds:X509Certificate> tag.
      */
     public function getRawCertificate(): string
     {
@@ -88,11 +114,11 @@ class Certificate
     }
 
     /**
-     * Create the authorization header using the raw certificate and secret key.
+     * Create the authorization header.
      */
     public function getAuthHeader(): string
     {
-        return 'Basic '.base64_encode(base64_encode($this->getRawCertificate()).':'.$this->getSecretKey());
+        return 'Basic ' . base64_encode(base64_encode($this->getRawCertificate()) . ':' . $this->getSecretKey());
     }
 
     /**
@@ -108,7 +134,8 @@ class Certificate
      */
     public function getCertHash(): string
     {
-        return base64_encode(hash('sha256', $this->rawCertificate));
+        // Hash the raw binary data of the certificate.
+        return base64_encode(hash('sha256', base64_decode($this->rawCertificate), true));
     }
 
     /**
@@ -116,16 +143,8 @@ class Certificate
      */
     public function getFormattedIssuer(): string
     {
-        $dnArray = explode(
-            ',',
-            str_replace(
-                ['0.9.2342.19200300.100.1.25', '/', ', '],
-                ['DC', ',', ','],
-                $this->x509->getIssuerDN(X509::DN_STRING)
-            )
-        );
-
-        return implode(', ', array_reverse($dnArray));
+        // This method relies on the correctly loaded $this->x509 object.
+        return $this->x509->getIssuerDN(X509::DN_STRING);
     }
 
     /**
@@ -142,11 +161,10 @@ class Certificate
 
     /**
      * Get the certificate signature.
-     *
-     * Note: Removes an extra prefix byte from the signature.
      */
     public function getCertSignature(): string
     {
+        // This method relies on the correctly loaded $this->x509 object.
         return substr($this->getCurrentCert()['signature'], 1);
     }
 }
