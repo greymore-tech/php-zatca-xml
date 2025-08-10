@@ -106,9 +106,17 @@ class Certificate
         return $this->rawCertificate;
     }
     
+    /**
+     * Generate a hash of the certificate.
+     */
     public function getCertHash(): string
     {
-        return base64_encode(hash('sha256', base64_decode($this->rawCertificate), true));
+        // --- START OF THE FIX ---
+        // Decode the raw Base64 certificate string back to its binary form.
+        $binaryCertificate = base64_decode($this->rawCertificate);
+        // Hash the binary data, as required by ZATCA.
+        return base64_encode(hash('sha256', $binaryCertificate, true));
+        // --- END OF THE FIX ---
     }
 
     public function __call($name, $arguments) { return $this->x509->{$name}(...$arguments); }
